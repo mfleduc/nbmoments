@@ -1,3 +1,22 @@
+#################################################################
+# Functions for moment calculation via polynomial approximation #
+#################################################################
+#
+#'@title Moment computation for the negative binomial posteror
+#'@description Uses the polynomial approximation of Bradlow et al as described in LeDuc and Kissler 2026
+#' to estimate moments of the negative binomial posterior distribution. Can compute both negative and positive integer moments
+#' with conditions on the moments described in the paper.
+#' @param k Integer: The moment order, \eqn{\mathbb{E}[X^k]}
+#' @param data Array: The count data with which to estimate the moment
+#' @param ell_max Integer, the maximum degree of the polynomial approximation to the Gamma function
+#' @param a,b the parameters for the Pearson-VI prior for the parameter m (odds ratio). Default
+#' a=0, b=max(2, k+1). The prior has the form \eqn{m^a/(1+m)^b}.
+#' @param c,d,z1,z2 The parameters for the PEarson-VI prior for the parameter r
+#' (dispersion parameter). Defaults c=0,d=1,z1=0,z2=-1. The prior takes the form
+#' \eqn{(r-z1)^c/(r-z2)^d}. Note that the distribution is defined only for 0>=z1>z2>-sum(data), and
+#' is supported on \eqn{(-z1, \infty)}. A minimally informative prior must set z1=0, and both z1 and z2 should be integers.
+#' @returns The approximated moment, using the method in LeDuc and Kissler 2026.
+#' @export
 compute_moment <- function( k, data,ell_max=50,a=1, b=max(2, k+1), c=0, d=1 , z1=0,z2=-1 ){
   #First: A lof of stuff needs to be precalculated
   stopifnot( abs(k-round(k))<10^-12   )
@@ -8,6 +27,7 @@ compute_moment <- function( k, data,ell_max=50,a=1, b=max(2, k+1), c=0, d=1 , z1
   n = length(data)
   xstar = max(data)
   x_sum=sum(data)
+  if(b<=k){b=k+1}
   K1 <- (a+b+x_sum+1)/n #K parameter
   #
   nk1 <- array(0, dim=c(1, xstar+2))
@@ -59,20 +79,31 @@ compute_moment <- function( k, data,ell_max=50,a=1, b=max(2, k+1), c=0, d=1 , z1
   }
   return(moment)
 }
+#'@title Computation of the polynomial approximant to the Gamma function.
+#'@description Computes the polynomial approximation to the Gamma function used in the
+#'moment estimation. Does so in a relatively stable manner by normalizing the approximation
+#'at each step.
+#'@param k The moment to be approximated, \eqn{\mathbb{E}[X^k]}
+#'@param x_sum the sum of the data
+#'@param a The a parameter for the prior distribution of m
+#'@param ell_max the maximum degree of the polynomial approximation
+#'@returns The coefficients of the polynomial U as well as the log of the scaling
+#'@export
 compute_U_polynomial <- function(k, x_sum, a, ell_max) {
   C_k <- a + x_sum + k + 1
   poly <- c(1, rep(0, ell_max))
   total_log_scale <- 0
-  
+
   for (j in seq_len(C_k)) {
     factor <- j^(0:ell_max)
     new_poly <- numeric(ell_max + 1)
     for (p in 0:ell_max) {
       for (q in 0:(ell_max - p)) {
-        new_poly[p + q + 1] <- new_poly[p + q + 1] + 
+        new_poly[p + q + 1] <- new_poly[p + q + 1] +
                                exp(sum(log(poly[p + 1])+log(factor[q + 1])))
       }
     }
+    # poly = new_poly
     # Normalize at each step
     max_val <- max(abs(new_poly[new_poly != 0]))
     if (max_val > 0 && is.finite(max_val)) {
@@ -84,7 +115,34 @@ compute_U_polynomial <- function(k, x_sum, a, ell_max) {
   }
   list(coeffs = poly[(1+ell_max):1], logscale = total_log_scale)
 }
+#'@title Moment computation for the negative binomial posterior via the Tricomi expansion
+#'@description Uses the Tricomi expansion
+#' to estimate moments of the negative binomial posterior distribution. Still a
+#' work in progress, but hopefully will allow generalization to arbitrary real moments
+#' @param k Integer: The moment order,\eqn{\mathbb{E}[X^k]}
+#' @param data Array: The count data with which to estimate the moment
+#' @param a,b the parameters for the Pearson-VI prior for the parameter m (odds ratio). Default
+#' a=0, b=max(2, k+1). The prior has the form \eqn{m^a/(1+m)^b}.
+#' @param c,d,z1,z2 The parameters for the PEarson-VI prior for the parameter r
+#' (dispersion parameter). Defaults c=0,d=1,z1=0,z2=-1. The prior takes the form
+#' \eqn{(r-z1)^c/(r-z2)^d}. Note that the distribution is defined only for 0>=z1>z2>-sum(data), and
+#' is supported on \eqn{(-z1, \infty)}. A minimally informative prior must set z1=0, and both z1 and z2 should be integers.
+#' @returns Right now, an error. Eventually, the approximated moment using a method based on the Tricomi expansion.
+#' @export
+compute_moment_tricomi <- function( k, data,a=1, b=max(2, k+1), c=0, d=1 , z1=0,z2=-1 ){
+  #First: A lof of stuff needs to be precalculated
+  stop("This function is under development and should not be used yet")
+  stopifnot( abs(k-round(k))<10^-12   )
+  k=round(k)
+  min_0k = min(0,k)
+  max_0k = max(0,k)
+  #
+  n = length(data)
+  xstar = max(data)
+  x_sum=sum(data)
+  K1 <- (a+b+x_sum+1)/n #K parameter
 
+}
 
 
 
