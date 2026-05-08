@@ -4,7 +4,7 @@
 \alias{normalized_weights}
 \title{Calculates normalized weights so that \eqn{\int fdx=1}}
 \usage{
-normalized_weights(lambda, powers, nodes, weights)
+normalized_weights(lambda, powers, nodes, weights, Xpow)
 }
 \arguments{
 \item{lambda}{numeric vector of Lagrange multipliers}

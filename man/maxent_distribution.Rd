@@ -7,8 +7,8 @@
 maxent_distribution(
   moments,
   values,
-  n_nodes = 150,
-  n_outer = 2000,
+  n_nodes = 200,
+  n_outer = 50,
   lambda_tol = 5e-06,
   optim_tol = 1e-07,
   lambda_edges = 0,
@@ -18,9 +18,9 @@ maxent_distribution(
 \arguments{
 \item{moments}{numeric vector of moment values \eqn{c_k}}
 
-\item{n_nodes}{number of quadrature nodes (default 150)}
+\item{n_nodes}{number of quadrature nodes (default 200)}
 
-\item{n_outer}{maximum L-BFGS iterations (default 2000)}
+\item{n_outer}{maximum L-BFGS iterations (default 50)}
 
 \item{lambda_tol}{convergence tolerance for Lagrange multipliers, outer
 iterations converge when sup-norm of difference beeween consecutive iterations

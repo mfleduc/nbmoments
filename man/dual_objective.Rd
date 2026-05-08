@@ -4,7 +4,7 @@
 \alias{dual_objective}
 \title{Dual objective and gradient for the MaxEnt problem}
 \usage{
-dual_objective(lambda, moments, powers, nodes, weights)
+dual_objective(lambda, moments, powers, nodes, weights, Xpow)
 }
 \arguments{
 \item{lambda}{numeric vector of Lagrange multipliers}

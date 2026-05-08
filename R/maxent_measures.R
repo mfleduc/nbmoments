@@ -20,6 +20,72 @@ library(statmod)
 # ==============================================================================
 # UTILITIES
 # ==============================================================================
+# ==============================================================================
+# INTERNAL GAUSS-LAGUERRE CACHE
+# ==============================================================================
+
+# package-private cache environment
+.laguerre_cache <- new.env(parent = emptyenv())
+
+#' Get cached Gauss-Laguerre quadrature rule
+#'
+#' Internal helper that memoizes calls to
+#' `statmod::gauss.quad()` for repeated use.
+#'
+#' @param n_nodes Number of quadrature nodes
+#'
+#' @return A list with components:
+#' \describe{
+#'   \item{nodes}{Quadrature nodes}
+#'   \item{weights}{Quadrature weights}
+#' }
+#'
+#' @keywords internal
+get_laguerre_quad <- function(n_nodes) {
+  
+  key <- as.character(n_nodes)
+  
+  if (!exists(key, envir = .laguerre_cache, inherits = FALSE)) {
+    
+    assign(
+      key,
+      statmod::gauss.quad(n_nodes, kind = "laguerre"),
+      envir = .laguerre_cache
+    )
+  }
+  
+  get(key, envir = .laguerre_cache, inherits = FALSE)
+}
+#'@title Model run function
+#'@description Wrapper for the package, generates a maxent_fit object for a given dataset and 
+#'list of desired moments. 
+#'@param x1 Dataset corresponding to the numerator of the mean ratio
+#'@param x2 Dataset corresponding to the denominator of the mean ratio
+#'@param moments The desired moments to be estimated, input as c(k1,k2,...,kn) for moments E{X^{k1}}, etc. Default is c(-1,1)
+#'@param ellmax Maximum order of the polynomial approximation to the gamma function. Default 120
+#'@param n_nodes Number of nodes to use in quadrature for moment evaluation. Default 200.
+#'@param n_outer Number of outer iterations used to solve the moment problem for a given set of moments. Default 50.
+#'@param a,b the parameters for the Pearson-VI prior for the parameter m (odds ratio). Default
+#' a=0, b=max(2, k+1). The prior has the form \eqn{m^a/(1+m)^b}.
+#'@param c,d,z1,z2 The parameters for the PEarson-VI prior for the parameter r
+#' (dispersion parameter). Defaults c=0,d=1,z1=0,z2=-1. The prior takes the form
+#' \eqn{(r-z1)^c/(r-z2)^d}. Note that the distribution is defined only for 0>=z1>z2>-sum(data), and
+#' is supported on \eqn{(-z1, \infty)}. A minimally informative prior must set z1=0, and both z1 and z2 should be integers.
+#'@returns A maxent_fit object corresponding to the maximum entropy solution to the induced moment problem
+#'@export
+estimate_dist = function(x1, x2, moments=c(-1,1), ellmax=120, n_nodes=200,
+                         n_outer=50,a=1, b=max(2, max(moments)+1), c=0, d=1 , z1=0,z2=-1 ){
+  ## In theory we would do input validation here
+  num_mom = array(0,dim=c(1, length(moments)))
+  denom_mom = array(0,dim=c(1, length(moments)))
+  for(mm in 1:length(moments)){
+    num_mom[mm] = compute_moment( moments[mm],x1,a=a,b=b,c=c,d=d,z1=z1,z2=z2,ell_max = ellmax )
+    denom_mom[mm] = compute_moment(-moments[mm],x2,a=a,b=b,c=c,d=d,z1=z1,z2=z2,ell_max = ellmax )
+  }
+  rmoments = num_mom*denom_mom
+  medist = maxent_distribution(moments, rmoments,n_nodes = n_nodes,n_outer=n_outer)
+  return(medist) 
+}
 #' @title Unnormalized log density
 #' @description Evaluate log unnormalized density at quadrature nodes
 #' @param lambda numeric vector of Lagrange multipliers
@@ -27,12 +93,12 @@ library(statmod)
 #' @param nodes numeric vector of quadrature nodes
 #' @returns numeric vector of log density values at nodes
 #' @export
-log_density_nodes <- function(lambda, powers, nodes) {
-  log_p <- numeric(length(nodes))
-  for (i in seq_along(powers)) {
-    log_p <- log_p + lambda[i] * nodes^powers[i]
-  }
-  log_p
+log_density_nodes <- function(lambda,Xpow) {
+  # log_p <- numeric(length(nodes))
+  # for (i in seq_along(powers)) {
+  #   log_p <- log_p + lambda[i] * nodes^powers[i]
+  # }
+  log_p = as.vector(Xpow%*%lambda)
 }
 #' @title Calculates normalized weights so that \eqn{\int fdx=1}
 #' @description Compute normalized weights at quadrature nodes
@@ -42,14 +108,14 @@ log_density_nodes <- function(lambda, powers, nodes) {
 #' @param weights numeric vector of quadrature weights
 #' @returns list with log_Z and normalized probability weights at nodes
 #' @export
-normalized_weights <- function(lambda, powers, nodes, weights) {
-  log_p <- log_density_nodes(lambda, powers, nodes)
+normalized_weights <- function(lambda, powers, nodes, weights, Xpow) {
+  log_p <- log_density_nodes(lambda, Xpow)
   max_lp <- max(log_p)
   unnorm <- weights * exp(log_p - max_lp)
   Z <- sum(unnorm)
   list(
     log_Z = max_lp + log(Z),
-    prob_weights = unnorm / Z
+    prob_weights = as.vector(unnorm) / Z
   )
 }
 #' @title Gauss-Laguerre based quadrature rule
@@ -60,32 +126,29 @@ normalized_weights <- function(lambda, powers, nodes, weights) {
 #' @return A list describing the quadrature rule
 #' @export
 gauss_laguerre_quad = function(lambda, moments, n_nodes=100){
+  quad_rule = get_laguerre_quad(n_nodes)
+  x_nodes = quad_rule$nodes
+  Xpow = outer(x_nodes, moments, "^")
   logp = function(x){sum(lambda*x^moments)}
-  dlogp = function(x){sum(moments*lambda*x^(moments-1))}
-  hesslogp = function(x){sum(moments*(moments-1)*lambda*x^(moments-2))}
-  optim_bds = c(-10,10)
-  optval = optim(1,logp, gr=dlogp, method="L-BFGS-B",lower=exp(optim_bds[1]),
-                 upper=exp(optim_bds[2]),control=list(fnscale=-1 ))
+  # Xpowd = outer(x_nodes, moments-1, "^")
+  # dlogp = function(x){sum(moments*lambda*x^(-1+moments))}
+  # hesslogp = function(x){sum(moments*(moments-1)*lambda*x^(moments-2))}
+  optim_bnds <- log(range(x_nodes))
+  # optim_bnds = c(-10,10)
+  optval = optim(1,logp, method="Brent", 
+                 lower=optim_bnds[1], upper=optim_bnds[2],control=list(fnscale=-1 ))
   xhat = optval$par #Mode of the distribution
   lhat = logp(xhat) # Value of log(p) at the mode
   sigma=sqrt(2)#+0.013514+0.003921
-  # stopifnot(hesslogp(xhat)<0)
-  # sigma = sqrt(-(1/hesslogp(xhat))) # "width" at the mode
-  # umin = -xhat/sigma #Lower bound where the function is nonzero
-  quad_rule = statmod::gauss.quad( n_nodes, kind="laguerre")
-  # quad_rule$weights=quad_rule$weights
-  # quad_rule$nodes=quad_rule$nodes*sqrt(2)
-  # quad_rule$weights = quad_rule$weights#[quad_rule$nodes>umin]#*sqrt(2)
-  # quad_rule$nodes = quad_rule$nodes#[quad_rule$nodes>umin]
-  # x_nodes = xhat+sigma*quad_rule$nodes
-  x_nodes = quad_rule$nodes
-  g_vals = exp(sapply(x_nodes, logp)-lhat+quad_rule$nodes)
+  g_vals = exp(Xpow%*%lambda-lhat+quad_rule$nodes)
   total_weights = sigma*quad_rule$weights*g_vals
   return(
     list(
       nodes=x_nodes,
       weights=total_weights,
-      g_nodes=g_vals
+      g_nodes=g_vals,
+      lhat=lhat,
+      Xpow = Xpow
     )
     )
 }
@@ -107,19 +170,41 @@ gauss_laguerre_quad = function(lambda, moments, n_nodes=100){
 #' @param weights quadrature weights
 #' @returns list with value (scalar dual objective) and gradient
 #' @export
-dual_objective <- function(lambda, moments, powers, nodes, weights) {
-  nw <- normalized_weights(lambda, powers, nodes, weights)
-  log_Z <- nw$log_Z
-  pw    <- nw$prob_weights
-
-  # Gradient: d log Z / d lambda_k = E_p[X^k]
-  grad_log_Z <- numeric(length(powers))
-  for (i in seq_along(powers)) {
-    grad_log_Z[i] <- sum(pw * nodes^powers[i])
-  }
-
-  value    <- log_Z - sum(lambda * moments)
-  gradient <- grad_log_Z - moments
+dual_objective <- function(lambda, moments, powers, nodes, weights, Xpow) {
+  # nw <- normalized_weights(lambda, powers, nodes, weights, Xpow)
+  # log_Z <- nw$log_Z
+  # pw    <- nw$prob_weights
+  # # Gradient: d log Z / d lambda_k = E_p[X^k]
+  # # grad_log_Z <- numeric(length(powers))
+  # grad_log_Z = colSums((Xpow)*(pw))
+  # # for (i in seq_along(powers)) {
+  # #   grad_log_Z[i] <- sum(pw * nodes^powers[i])
+  # # }
+  # 
+  # value    <- log_Z - sum(lambda * moments)
+  # gradient <- grad_log_Z - moments
+  # dual_objective_fast <- function(lambda, moments, Xpow, weights) {
+    
+    # ensure correct orientation
+    stopifnot(ncol(Xpow) == length(lambda))
+    stopifnot(length(weights) == nrow(Xpow))
+    
+    # log density at nodes
+    lp <- as.vector(Xpow %*% lambda)
+    
+    max_lp <- max(lp)
+    
+    w_unnorm <- weights * exp(lp - max_lp)
+    Z <- sum(w_unnorm)
+    
+    pw <- as.vector(w_unnorm / Z)
+    
+    # expectation under current distribution
+    grad_log_Z <- colSums(Xpow * pw)
+    
+    value <- (max_lp + log(Z)) - sum(lambda * moments)
+    gradient <- grad_log_Z - moments
+    
   if( tail(lambda,1) >0){value=Inf;gradient=Inf}
   list(value = value, gradient = gradient)
 }
@@ -134,16 +219,16 @@ dual_objective <- function(lambda, moments, powers, nodes, weights) {
 #' @param weights quadrature weights
 #' @returns matrix of second derivatives
 #' @export
-dual_hessian <- function(lambda, powers, nodes, weights) {
-  nw <- normalized_weights(lambda, powers, nodes, weights)
+dual_hessian <- function(lambda, powers, nodes, weights, Xpow) {
+  nw <- normalized_weights(lambda, powers, nodes, weights, Xpow)
   pw <- nw$prob_weights
   m  <- length(powers)
   H  <- matrix(0, m, m)
   for (i in seq_len(m)) {
-    xi <- nodes^powers[i]
+    xi <- Xpow[,i]
     ei <- sum(pw * xi)
     for (j in i:m) {
-      xj <- nodes^powers[j]
+      xj <- Xpow[,j]
       ej <- sum(pw * xj)
       H[i, j] <- sum(pw * xi * xj) - ei * ej
       H[j, i] <- H[i, j]
@@ -173,8 +258,8 @@ dual_hessian <- function(lambda, powers, nodes, weights) {
 #' @param moments numeric vector of moment values \eqn{c_k}
 #' @param powers integer vector of moment orders k (can include negatives)
 #'   Example: c(-1L, 1L, 2L) for \eqn{E[X^{-1}], E[X], E[X^2]}
-#' @param n_nodes number of quadrature nodes (default 150)
-#' @param n_outer maximum L-BFGS iterations (default 2000)
+#' @param n_nodes number of quadrature nodes (default 200)
+#' @param n_outer maximum L-BFGS iterations (default 50)
 #' @param lambda_tol convergence tolerance for Lagrange multipliers, outer
 #' iterations converge when sup-norm of difference beeween consecutive iterations
 #' is less than lambda_tol
@@ -194,8 +279,8 @@ dual_hessian <- function(lambda, powers, nodes, weights) {
 #'   $moments_achieved moments of the fitted density
 #'   $moment_errors   absolute errors in moment constraints
 #' @export
-maxent_distribution <- function(moments, values, n_nodes = 150,
-                           n_outer=2000,lambda_tol=0.5e-5,optim_tol=1e-7,lambda_edges = 0,
+maxent_distribution <- function(moments, values, n_nodes = 200,
+                           n_outer=50,lambda_tol=0.5e-5,optim_tol=1e-7,lambda_edges = 0,
                            verbose = FALSE) {
   stopifnot(length(moments) == length(values))
   stopifnot(any(moments>0))
@@ -214,33 +299,10 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
   # In the future, if we have 1 and 2 then we start with the truncated normal guess
   # Then just nudge stuff to ensure proper decay
   lambda_init = rep(0, length(moments))
-  # if(1%in%moments&2%in%moments){
-  #   ndx1 = which(moments==1)
-  #   ndx2 = which(moments==2)
-  #   tnorm_guess = fit_tnorm(values[ndx1],values[ndx2])
-  #   lambda_init[ndx1] = tnorm_guess[1]
-  #   lambda_init[ndx2] = tnorm_guess[2]
-  #   disp(paste("Incorporating moments 1 and 2"))
-  #   # lambda_init[ndxn1+1] = log(sqrt(gig_guess$a/gig_guess$b)/(2*besselK( sqrt(gig_guess$a*gig_guess$b),1  )))
-  #   # if(any(moments > 1)){  lambda_init[length(moments)]=lambda_edges }
-  #   # if(any(moments< -1)){  lambda_init[1]=lambda_edges }
-  # }else if(1%in%moments&-1%in%moments){
-  #   disp(paste("Incorporating moments 1 and -1"))
-  #   ndx1 = which(moments==1)
-  #   ndxn1 = which(moments==-1)
-  #   ndx0=ndxn1+1
-  #   gig_guess = fit_gig( values[ndx1], values[ndxn1] )
-  #   lambda_init[ndx1] = gig_guess$lambda_1
-  #   lambda_init[ndxn1] = gig_guess$lambda_m1
-  #   # if(any(moments > 2)){  lambda_init[length(moments)]=lambda_edges }
-  #   # if(any(moments< 0)){  lambda_init[1]=lambda_edges }
   if(1%in%moments){
     ndx1 = which(moments==1)
     lambda_init[ndx1] = -1/values[ndx1]
     disp(paste("Incorporating moment   1"))
-    # lambda_init[ndx1-1] = log(values[ndx1])
-    # if(any(moments>1)){  lambda_init[length(moments)]=lambda_edges }
-    # if(any(moments<0)){  lambda_init[1]=lambda_edges }
   }else{
     max_pos <- which(moments == max(moments[moments > 0]))
     if (length(max_pos) > 0){ lambda_init[max_pos] = lambda_edges }
@@ -256,7 +318,8 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
     #Idea: Whichever ones match the given information least? IDK
     # if(!all(moments==1)){
       quad_init = gauss_laguerre_quad(lambda_init[moments_incorp], moments[moments_incorp], n_nodes=n_nodes  )
-      nw <- normalized_weights(lambda_init[moments_incorp], moments[moments_incorp], quad_init$nodes, quad_init$weights)
+      nw <- normalized_weights(lambda_init[moments_incorp], moments[moments_incorp], 
+                               quad_init$nodes, quad_init$weights, quad_init$Xpow)
       log_Z <- nw$log_Z
       pw    <- nw$prob_weights
       est_moments = 0*values
@@ -280,6 +343,7 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
       bounds_upper = array(Inf,dim=c(1, length(lambda)) )
       bounds_upper[length(lambda)] = 0#-1e-5
       if(any(moments<0)){bounds_upper[1] =0}# -1e-5}
+      
       for(outer in seq_len(n_outer)){
         # if(lambda[1]==-1e-8){lambda[1] = lambda_edges}
         # if(lambda[length(lambda)]==-1e-8){lambda[length(lambda)] = lambda_edges}
@@ -288,35 +352,74 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
           # disp(outer)
           quadrule = gauss_laguerre_quad(lambda_prev, moments[moments_incorp], n_nodes=n_nodes  )
         }
+        ### First: Set up the functions to use in the optimization to avoid repeatedly generating 
+        ### anonymous functions in the solver
+        dual_fn <- function(X, values, moments, nodes, weights, Xpow) {
+          dual_objective(
+            X,
+            values,
+            moments,
+            nodes,
+            weights,
+            Xpow
+          )$value
+        }
+        dual_gr <- function(X, values, moments, nodes, weights, Xpow) {
+          dual_objective(
+            X,
+            values,
+            moments,
+            nodes,
+            weights,
+            Xpow
+          )$gradient
+        }
+        # optval = optim(
+        #   par=lambda,
+        #   fn = function(X){
+        #     res = dual_objective(X, values[moments_incorp], moments[moments_incorp],
+        #                          quadrule$nodes,quadrule$weights,quadrule$Xpow )
+        #     return(res$value)
+        #   },
+        #   gr = function(X){
+        #     res =dual_objective(X, values[moments_incorp], moments[moments_incorp],
+        #                         quadrule$nodes,quadrule$weights,quadrule$Xpow  )
+        #     return(res$gradient)
+        #   },
+        #   lower=bounds_lower,
+        #   upper=bounds_upper,
+        #   method="L-BFGS-B",
+        #   control=list(
+        #     maxit=1000,
+        #     factr= 1e6*(optim_tol/.Machine$double.eps),
+        #     pgtol=optim_tol
+        #   )
+        # )
         optval = optim(
-          par=lambda,
-          fn = function(X){
-            res = dual_objective(X, values[moments_incorp], moments[moments_incorp],
-                                 quadrule$nodes,quadrule$weights )
-            return(res$value)
-          },
-          gr = function(X){
-            res =dual_objective(X, values[moments_incorp], moments[moments_incorp],
-                                quadrule$nodes,quadrule$weights )
-            return(res$gradient)
-          },
-          lower=bounds_lower,
-          upper=bounds_upper,
-          method="L-BFGS-B",
-          control=list(
-            maxit=1000,
-            factr= 1e6*(optim_tol/.Machine$double.eps),
-            pgtol=optim_tol
+          par = lambda,
+          fn  = dual_fn,
+          gr  = dual_gr,
+          values  = values[moments_incorp],
+          moments = moments[moments_incorp],
+          nodes   = quadrule$nodes,
+          weights = quadrule$weights,
+          Xpow    = quadrule$Xpow,
+          lower = bounds_lower,
+          upper = bounds_upper,
+          method = "L-BFGS-B",
+          control = list(
+            maxit = 1000,
+            factr = 1e6 * (optim_tol / .Machine$double.eps),
+            pgtol = optim_tol
           )
         )
-
         # moment_est =
         lambda_new=optval$par
         # disp(lambda_new)
         # disp(outer)
         #What are the moments?
-        nw = normalized_weights( lambda, moments[moments_incorp], quadrule$nodes, quadrule$weights   )
-        moments_achieved = sapply(moments[moments_incorp], function(X){sum(nw$prob_weights*quadrule$nodes^X)} )
+        nw = normalized_weights( lambda, moments[moments_incorp], quadrule$nodes, quadrule$weights , quadrule$Xpow  )
+        moments_achieved = colSums(nw$prob_weights*quadrule$Xpow) 
         #
         # disp(abs(moments_achieved-values[moments_incorp]) /abs(values[moments_incorp]))
         moment_delta = max(abs(moments_achieved-values[moments_incorp])/abs(values[moments_incorp]))
@@ -327,13 +430,12 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
         lambda=lambda_new
       }
       lambda_init[moments_incorp]=lambda
-      nw <- normalized_weights(lambda_init[moments_incorp], moments[moments_incorp], quadrule$nodes, quadrule$weights)
+      nw <- normalized_weights(lambda_init[moments_incorp], moments[moments_incorp], 
+                               quadrule$nodes, quadrule$weights, quadrule$Xpow)
       log_Z <- nw$log_Z
       pw    <- nw$prob_weights
-      est_moments = 0*values
-      for(mm in 1:length(moments)){
-        est_moments[mm] =  sum(pw * quadrule$nodes^moments[mm])
-      }
+      est_moments =  sapply( moments, function(X){sum(nw$prob_weights*quadrule$nodes^X)} )
+      # }
       est_moments[moments_incorp] = values[moments_incorp]
       next_index = which.max(  abs(est_moments-values)/values )
     }
@@ -344,7 +446,10 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
   if(any(is.nan(quad_final$weights))){
     quad_final = gauss_laguerre_quad(lambda, moments, n_nodes)
   }
-  nw = normalized_weights( lambda, moments, quad_final$nodes, quad_final$weights*exp(quad_final$lhat)  )
+  # disp(quad_final$lhat)
+  nw = normalized_weights( lambda, moments, quad_final$nodes, 
+                           quad_final$weights*exp(quad_final$lhat),
+                           quad_final$Xpow)
 
   moments_achieved = numeric(length(moments))
   names(moments_achieved) = as.character(moments)
@@ -365,6 +470,7 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
       powers           = moments,
       nodes            = quad_final$nodes,
       weights          = quad_final$weights,
+      Xpow             = quad_final$Xpow,
       p_nodes          = nw$prob_weights / quad_final$weights,
       prob_weights     = nw$prob_weights,
       log_Z            = nw$log_Z,
@@ -381,7 +487,7 @@ maxent_distribution <- function(moments, values, n_nodes = 150,
 # ==============================================================================
 
 #' Print method for maxent_fit
-#' @export
+#' @exportS3Method
 print.maxent_fit <- function(x, ...) {
   cat("Maximum Entropy density on (0, inf)\n")
   cat("Moment orders:", x$powers, "\n")
@@ -391,7 +497,7 @@ print.maxent_fit <- function(x, ...) {
 }
 
 #' Summary method for maxent_fit
-#'@export
+#'@exportS3Method
 summary.maxent_fit <- function(object, probs = c(0.80, 0.95),grid=NA, ...) {
   cat("=== Maximum Entropy Density on (0, inf) ===\n\n")
   cat("Moment orders:", object$powers, "\n")
@@ -437,14 +543,16 @@ summary.maxent_fit <- function(object, probs = c(0.80, 0.95),grid=NA, ...) {
 #' @param object maxent_fit object
 #' @param newdata numeric vector of x values
 #' @return numeric vector of normalized density values
-#' @export
+#' @exportS3Method
 predict.maxent_fit <- function(object, newdata, ...) {
   log_p <- numeric(length(newdata))
-  for (i in seq_along(object$powers)) {
-    log_p <- log_p + object$lambda[i] * newdata^object$powers[i]
-  }
+  Xpow_new  =outer( newdata, object$powers, "^" )
+  log_p = Xpow_new%*%object$lambda
+  # for (i in seq_along(object$powers)) {
+  #   log_p <- log_p + object$lambda[i] * newdata^object$powers[i]
+  # }
   # Normalize using partition function estimated from quadrature
-  log_p_nodes <- log_density_nodes(object$lambda, object$powers, object$nodes)
+  log_p_nodes <- log_density_nodes(object$lambda, object$Xpow)
   max_lp <- max(log_p_nodes)
   Z <- sum(object$weights * exp(log_p_nodes - max_lp))
   exp(log_p - max_lp) / Z
@@ -488,6 +596,7 @@ credible_interval <- function(object, prob = 0.95,grid=NA) {
 #' @param log_scale plot on log x scale (default TRUE)
 #' @param add add to existing plot (default FALSE)
 #' @param ... additional arguments passed to plot/lines
+#' @exportS3Method
 plot.maxent_fit <- function(x, n_plot = 500, log_scale = FALSE,
                             add = FALSE, ...) {
   # Use a smooth grid for plotting

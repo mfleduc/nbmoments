@@ -4,7 +4,7 @@
 \alias{dual_hessian}
 \title{Hessian of the dual problem}
 \usage{
-dual_hessian(lambda, powers, nodes, weights)
+dual_hessian(lambda, powers, nodes, weights, Xpow)
 }
 \arguments{
 \item{lambda}{numeric vector of Lagrange multipliers}

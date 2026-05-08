@@ -4,7 +4,7 @@
 \alias{log_density_nodes}
 \title{Unnormalized log density}
 \usage{
-log_density_nodes(lambda, powers, nodes)
+log_density_nodes(lambda, Xpow)
 }
 \arguments{
 \item{lambda}{numeric vector of Lagrange multipliers}
